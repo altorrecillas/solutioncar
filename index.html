@@ -1870,6 +1870,9 @@ label { display: block; font-size: 12.5px; font-weight: 700; margin-bottom: 6px;
     return Promise.resolve().then(() => dispatch(method, url, body));
   };
   window.getLocalDocUrl = (id) => getFile(id);
+  // Para el indicador de almacenamiento de Ajustes.
+  window.localDbSize = () => { try { return JSON.stringify(DB).length; } catch (e) { return 0; } };
+  window.localFilesCount = () => filedo('readonly', (s) => s.getAllKeys()).then((k) => (k || []).length).catch(() => 0);
   window._localDB = () => DB; // para pruebas
 })();
 
@@ -2193,7 +2196,7 @@ label { display: block; font-size: 12.5px; font-weight: 700; margin-bottom: 6px;
 
 // Sincronizada con versionName de android/app/build.gradle: build-assets.sh la
 // reemplaza al empaquetar el APK, así Ajustes muestra siempre la versión real.
-const APP_VERSION = '1.6.5';
+const APP_VERSION = '1.6.6';
 
 // ---------------------------------------------------------------------------
 // Utilidades
@@ -4357,6 +4360,18 @@ window.adminDeleteUser = async (uid, username) => {
 async function renderSettings() {
   const el = $('#tab-settings');
   const s = await api('GET', '/settings');
+
+  // Uso de almacenamiento (solo modo local: en servidor los datos no viven aquí).
+  let sto = null;
+  if (window.LOCAL_MODE) {
+    try {
+      const dbChars = window.localDbSize ? window.localDbSize() : 0;
+      const photos = (await receiptKeys()).size + (window.localFilesCount ? await window.localFilesCount() : 0);
+      let est = null;
+      try { if (navigator.storage && navigator.storage.estimate) est = await navigator.storage.estimate(); } catch (e) {}
+      sto = { dbChars, photos, est };
+    } catch (e) {}
+  }
   const sf = (label, name, type, value, extra = '') =>
     `<div class="field"><label>${label}</label><input name="${name}" type="${type}" value="${esc(value ?? '')}" ${extra}></div>`;
 
@@ -4469,6 +4484,19 @@ async function renderSettings() {
       </div>
       <p class="muted" style="margin:10px 0 0;font-size:12px">“Exportar” abre el selector de Android (elige <strong>Drive</strong> como destino). “Enviar a Drive…” usa la hoja de compartir (Drive, Gmail, etc.).</p>
     </div>
+
+    ${sto ? (() => {
+      const LIMIT = 5 * 1024 * 1024; // ~límite de localStorage por sitio
+      const pct = Math.min(100, Math.round((sto.dbChars / LIMIT) * 100));
+      const mb = (n) => (n / 1048576).toFixed(1);
+      const warn = pct >= 80;
+      return `<div class="card">
+        <h3>${ic('layers')} Almacenamiento</h3>
+        <div class="budget-head"><span>Base de datos: ${mb(sto.dbChars)} MB de ~5 MB</span><span class="chip ${warn ? 'overdue' : 'ok'}">${pct} %</span></div>
+        <div class="budget-track"><div class="budget-fill ${warn ? 'over' : ''}" style="width:${Math.max(2, pct)}%"></div></div>
+        <p class="muted" style="margin:8px 0 0;font-size:12.5px">${sto.photos} foto(s) y documento(s) aparte, sin límite práctico${sto.est && sto.est.quota ? ` · el navegador usa ${mb(sto.est.usage || 0)} MB de ${(sto.est.quota / 1073741824).toFixed(1)} GB disponibles` : ''}.${warn ? ' <strong>La base de datos se acerca al límite: haz una copia de seguridad cuanto antes.</strong>' : ''}</p>
+      </div>`;
+    })() : ''}
 
     <div class="card about-card">
       <div class="about-head">

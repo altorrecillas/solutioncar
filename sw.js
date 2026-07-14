@@ -2,7 +2,7 @@
 // Service worker de la webapp de SolutionCar (generado por tools/build-webapp.js).
 // Red primero con caché de reserva: siempre intenta traer la última versión y,
 // sin conexión, sirve la última copia buena.
-const CACHE = 'sc-webapp-v1.6.5';
+const CACHE = 'sc-webapp-v1.6.6';
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) =>
     c.addAll(['./']).then(() =>
