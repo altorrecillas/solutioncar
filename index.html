@@ -342,6 +342,7 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 .grid { display: grid; gap: 12px; }
 .stats-grid { grid-template-columns: repeat(2, 1fr); }
 @media (min-width: 680px) { .stats-grid { grid-template-columns: repeat(4, 1fr); } }
+.stats-grid .stat.wide { grid-column: 1 / -1; }
 .stat {
   position: relative; overflow: hidden;
   background: var(--surface); border: 1px solid var(--border);
@@ -991,6 +992,7 @@ label { display: block; font-size: 12.5px; font-weight: 700; margin-bottom: 6px;
 }
 .user-badge:hover { transform: scale(1.06); }
 .user-badge:active { transform: scale(.94); }
+.user-badge .ic { width: 20px; height: 20px; }
 
 /* ---------------------------------------------------------- Informe ----- */
 #report-overlay {
@@ -1531,13 +1533,18 @@ label { display: block; font-size: 12.5px; font-weight: 700; margin-bottom: 6px;
     const co2Grid = opts.co2Grid != null ? opts.co2Grid : 0.25;
     const fuel = computeFuelStats(v.id);
     const expenses = DB.expenses.filter((e) => e.vehicle_id === v.id);
-    const odos = [
+    const recorded = [
       ...fuel.map((f) => f.odometer),
-      ...expenses.map((e) => e.odometer).filter((x) => x != null),
-      v.initial_odo,
+      ...expenses.map((e) => e.odometer),
     ].filter((x) => x != null);
+    const odos = [...recorded, v.initial_odo].filter((x) => x != null);
     const maxOdo = odos.length ? Math.max(...odos) : v.initial_odo;
-    const distance = Math.max(0, maxOdo - v.initial_odo);
+    // Base de la distancia recorrida: el odómetro inicial o, si está a 0
+    // (vehículo importado de Fuelio o puesto a 0 para ver el odómetro real
+    // en el resumen), el registro más antiguo: así los km previos sin datos
+    // no diluyen coste/km, km diarios ni predicciones.
+    const baseOdo = v.initial_odo > 0 ? v.initial_odo : (recorded.length ? Math.min(...recorded) : (v.initial_odo || 0));
+    const distance = Math.max(0, maxOdo - baseOdo);
 
     const fuelCost = fuel.reduce((s, f) => s + (f.total_cost || 0), 0);
     const fuelLiters = fuel.reduce((s, f) => s + (f.liters || 0), 0);
@@ -1872,6 +1879,14 @@ label { display: block; font-size: 12.5px; font-weight: 700; margin-bottom: 6px;
   window.getLocalDocUrl = (id) => getFile(id);
   // Para el indicador de almacenamiento de Ajustes.
   window.localDbSize = () => { try { return JSON.stringify(DB).length; } catch (e) { return 0; } };
+  window.localCounts = () => ({
+    vehicles: DB.vehicles.length,
+    fuel: DB.fuel_logs.length,
+    expenses: DB.expenses.length,
+    trips: (DB.trips || []).length,
+    reminders: DB.reminders.length,
+    documents: DB.documents.length,
+  });
   window.localFilesCount = () => filedo('readonly', (s) => s.getAllKeys()).then((k) => (k || []).length).catch(() => 0);
   window._localDB = () => DB; // para pruebas
 })();
@@ -2196,7 +2211,7 @@ label { display: block; font-size: 12.5px; font-weight: 700; margin-bottom: 6px;
 
 // Sincronizada con versionName de android/app/build.gradle: build-assets.sh la
 // reemplaza al empaquetar el APK, así Ajustes muestra siempre la versión real.
-const APP_VERSION = '1.6.6';
+const APP_VERSION = '1.6.7';
 
 // ---------------------------------------------------------------------------
 // Utilidades
@@ -3163,11 +3178,20 @@ function handleShortcut() {
 }
 
 function renderUserBadge() {
+  const badge = $('#user-badge');
+  // En modo local no hay cuentas: el acceso a Ajustes es un engranaje, no unas
+  // iniciales (siempre serían las mismas). En servidor sí hay usuarios reales.
+  if (window.LOCAL_MODE) {
+    badge.innerHTML = ic('sliders');
+    badge.title = 'Ajustes';
+    badge.setAttribute('aria-label', 'Ajustes');
+    badge.setAttribute('role', 'button');
+    return;
+  }
   const u = state.user;
   if (!u) return;
   const name = u.display_name || u.username;
   const initials = name.trim().slice(0, 2).toUpperCase();
-  const badge = $('#user-badge');
   badge.textContent = initials;
   badge.title = name + (u.is_admin ? ' (admin)' : '');
 }
@@ -3608,6 +3632,7 @@ async function renderDashboard() {
   const lab = L(v);
 
   const stats = [
+    ['Odómetro', fmtKm(s.maxOdo), 'wide'],
     ['Gasto total', fmtEur(s.totalCost)],
     ['Distancia', fmtKm(s.distance)],
     [`Coste / ${dU().u}`, s.costPerKm != null ? eur.format(s.costPerKm / dU().f) : '—'],
@@ -3748,7 +3773,7 @@ async function renderDashboard() {
 
   // Solo las secciones que el usuario haya elegido mostrar (Ajustes → Pantalla principal).
   const on = dashEnabledSet();
-  const statsHtml = `<div class="grid stats-grid">${stats.map(([l, val]) => `<div class="stat"><div class="label">${l}</div><div class="value">${val}</div></div>`).join('')}</div>`;
+  const statsHtml = `<div class="grid stats-grid">${stats.map(([l, val, cls]) => `<div class="stat${cls ? ' ' + cls : ''}"><div class="label">${l}</div><div class="value">${val}</div></div>`).join('')}</div>`;
   const monthlyHtml = `<div class="card"><h3>Gasto mensual (últimos 12 meses)</h3><div class="bars">${bars}</div></div>`;
   const categoriesHtml = `<div class="card"><h3>Gasto por categoría</h3>${cats}</div>`;
   const sec = {
@@ -4379,22 +4404,38 @@ async function renderSettings() {
   el.innerHTML = `
     <div class="section-title"><h2>Ajustes</h2></div>
 
-    <div class="card">
+    ${window.LOCAL_MODE ? (() => {
+      // En modo local no hay cuentas: en su lugar, un vistazo a los datos.
+      const c = window.localCounts ? window.localCounts() : null;
+      if (!c) return '';
+      const total = c.fuel + c.expenses + c.trips + c.reminders;
+      let lastBk = null; try { lastBk = localStorage.getItem('sc_last_backup'); } catch (e) {}
+      return `<div class="card">
+        <h3>${ic('chartBar')} Tus datos</h3>
+        <div class="grid stats-grid">
+          <div class="stat"><div class="label">Vehículos</div><div class="value">${num0.format(c.vehicles)}</div></div>
+          <div class="stat"><div class="label">Registros</div><div class="value">${num0.format(total)}</div></div>
+          <div class="stat"><div class="label">Documentos</div><div class="value">${num0.format(c.documents)}</div></div>
+          <div class="stat"><div class="label">Última copia</div><div class="value">${lastBk ? fmtDate(lastBk) : '—'}</div></div>
+        </div>
+        <p class="muted" style="margin:12px 0 0;font-size:12.5px">${num0.format(c.fuel)} repostajes · ${num0.format(c.expenses)} gastos · ${num0.format(c.trips)} viajes · ${num0.format(c.reminders)} avisos. Todo se guarda solo en este dispositivo${lastBk ? '' : ' — <strong>haz tu primera copia de seguridad</strong>'}.</p>
+      </div>`;
+    })() : `<div class="card">
       <h3>${ic('user')} Mi cuenta</h3>
       <p class="muted" style="margin:-4px 0 12px;font-size:13px">Usuario <strong>${esc(u.username || '')}</strong>${u.is_admin ? ' · <span class="chip ok">administrador</span>' : ''}</p>
       <form id="account-form">
         ${sf('Nombre para mostrar', 'display_name', 'text', u.display_name || '', 'placeholder="' + esc(u.username || '') + '"')}
         <button type="submit" class="btn btn-sm">Guardar nombre</button>
       </form>
-      ${window.LOCAL_MODE ? '' : `<hr class="sep">
+      <hr class="sep">
       <form id="password-form">
         <div class="row">
           ${sf('Contraseña actual', 'current', 'password', '', 'autocomplete=current-password')}
           ${sf('Nueva contraseña', 'next', 'password', '', 'autocomplete=new-password minlength=6')}
         </div>
         <button type="submit" class="btn btn-sm">Cambiar contraseña</button>
-      </form>`}
-    </div>
+      </form>
+    </div>`}
 
     <div class="card">
       <h3>${ic('ruler')} Unidades y moneda</h3>
@@ -4575,8 +4616,8 @@ async function renderSettings() {
     `}
   `;
 
-  // --- Mi cuenta ---
-  $('#account-form').addEventListener('submit', async (e) => {
+  // --- Mi cuenta (solo con servidor; en local no hay cuentas) ---
+  if ($('#account-form')) $('#account-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
       const fd = Object.fromEntries(new FormData(e.target).entries());
